@@ -39,3 +39,7 @@ open build/ZCodeGauge.app
 - `Sources/` App 源码（Swift/AppKit，零第三方依赖）
 - `probe/` 数据探针（解密验证 + 接口连通性测试）
 - `notes/api-probe.md` 接口与加密格式的完整调研记录
+
+## 更新日志
+
+- **2026-10-13** 项目发布：macOS 菜单栏实时查看智谱 Coding Plan 额度——5h 窗口 / 本周 token / 重置次数 / MCP 工具额度，60 秒自动刷新，零第三方依赖。
