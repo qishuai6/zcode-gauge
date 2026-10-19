@@ -42,4 +42,5 @@ open build/ZCodeGauge.app
 
 ## 更新日志
 
+- **2026-10-19** 修复 api-key 查找写死 `bigmodel-individual-coding-plan` 导致两接口齐报「不可达」的问题：credentials.json 里 api-key 的 key 名会随计划类型变化（individual / team 等），现改为优先 individual、其余 `*coding-plan*api-key` 兜底。
 - **2026-10-13** 项目发布：macOS 菜单栏实时查看智谱 Coding Plan 额度——5h 窗口 / 本周 token / 重置次数 / MCP 工具额度，60 秒自动刷新，零第三方依赖。

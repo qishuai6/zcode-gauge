@@ -67,15 +67,19 @@ enum Credentials {
         }
 
         var apiKey: String?
+        var anyPlanApiKey: String?   // 2026-10-19 起 api-key 挂在 team 计划 key 下，individual 匹配不到时兜底
         var jwt: String?
         var oauth: String?
         for (k, v) in json {
             guard let plain = decrypt(v) else { continue }
-            if k.contains("bigmodel-individual-coding-plan") && k.contains("api-key") { apiKey = plain }
+            if k.contains("coding-plan") && k.contains("api-key") {
+                if k.contains("bigmodel-individual-coding-plan") { apiKey = plain }
+                else { anyPlanApiKey = anyPlanApiKey ?? plain }
+            }
             if k == "zcodejwttoken" { jwt = plain }
             if k == "oauth:bigmodel:access_token" { oauth = plain }
         }
-        guard let apiKey, let jwt, let oauth else { return nil }
+        guard let apiKey = apiKey ?? anyPlanApiKey, let jwt, let oauth else { return nil }
         return (apiKey, jwt, oauth)
     }
 
