@@ -22,8 +22,6 @@ struct QuotaSnapshot {
     var resetsWeek: Int?
     var localTokens5h: Int64?
     var localTokensWeek: Int64?
-    var est5hLimit: Int64?
-    var estWeekLimit: Int64?
     var updatedAt = Date()
     var quotaOK = false       // quota/limit 是否成功
     var resetOK = false       // reset/status 是否成功
@@ -112,13 +110,8 @@ final class QuotaService {
 
             group.wait()
 
-            // 用本地绝对量 + API 百分比反推限额（百分比太小或缺失时不估，避免失真）
-            if let f = snap.fiveHour, let t5 = snap.localTokens5h, f.usedPercent >= 5, f.usedPercent <= 100 {
-                snap.est5hLimit = Int64((Double(t5) / (f.usedPercent / 100)).rounded())
-            }
-            if let w = snap.weekly, let tw = snap.localTokensWeek, w.usedPercent >= 5, w.usedPercent <= 100 {
-                snap.estWeekLimit = Int64((Double(tw) / (w.usedPercent / 100)).rounded())
-            }
+            // 不做限额反推：本地按「最近 5 小时 / 本周一至今」统计，服务端是固定 5h 窗口与周周期，
+            // 两者口径不同，反推出来的限额会严重失真（曾算出 1.29 亿这种数字），只展示本地绝对量
 
             DispatchQueue.main.async { done(snap) }
         }
@@ -143,28 +136,44 @@ final class QuotaService {
                   let limits = (obj["data"] as? [String: Any])?["limits"] as? [[String: Any]] else {
                 done(false, nil); return
             }
-            // 语义识别，不依赖数组顺序：TOKENS_LIMIT 里 nextResetTime 最近的 = 5h 窗口，最远的 = 周
-            var tokenLimits: [(pct: Double, reset: Date)] = []
+            // 窗口识别与 ZCode 客户端一致：TOKENS_LIMIT 按 (unit, number) 精确匹配
+            // 5h 窗口 = unit 3 / number 5，周窗口 = unit 6；percentage 是已用百分比
+            // （客户端渲染时做 100 - percentage，文案为「5 小时 Prompt 池已用 {percent}」）
+            // 早期版本按 nextResetTime 远近猜窗口，窗口时间跨过来时会整体对调，故弃用
+            var fiveHour: (pct: Double, reset: Date)?
+            var weekly: (pct: Double, reset: Date)?
+            var fallback: [(pct: Double, reset: Date)] = []
             var tool: ToolQuota?
             for l in limits {
                 let type = l["type"] as? String ?? ""
                 let resetMs = (l["nextResetTime"] as? Double) ?? 0
                 let reset = Date(timeIntervalSince1970: resetMs / 1000)
-                if type == "TOKENS_LIMIT", let pct = (l["percentage"] as? Double) ?? (l["percentage"] as? Int).map(Double.init) {
-                    tokenLimits.append((pct, reset))
+                guard let raw = l["percentage"] as? Double ?? (l["percentage"] as? Int).map(Double.init) else { continue }
+                if type == "TOKENS_LIMIT" {
+                    let unit = (l["unit"] as? Int) ?? (l["unit"] as? Double).map(Int.init) ?? -1
+                    let number = (l["number"] as? Int) ?? (l["number"] as? Double).map(Int.init) ?? -1
+                    let w = (pct: raw, reset: reset)
+                    if unit == 3 && number == 5 { fiveHour = w }
+                    else if unit == 6 { weekly = w }
+                    else { fallback.append(w) }
                 } else if type == "TIME_LIMIT",
                           let total = (l["usage"] as? Int) ?? (l["usage"] as? Double).map(Int.init) {
                     let used = (l["currentValue"] as? Int) ?? (l["currentValue"] as? Double).map(Int.init) ?? 0
                     tool = ToolQuota(total: total, used: used)
                 }
             }
-            guard tokenLimits.count >= 2,
-                  let near = tokenLimits.min(by: { $0.reset < $1.reset }),
-                  let far = tokenLimits.max(by: { $0.reset < $1.reset }) else {
-                done(false, nil); return
+            // unit 字段缺失或结构变动时退回旧规则，按重置时间远近兜底
+            if fiveHour == nil || weekly == nil {
+                let all = fallback + [fiveHour, weekly].compactMap { $0 }
+                if fiveHour == nil, let near = all.min(by: { $0.reset < $1.reset }) { fiveHour = near }
+                if weekly == nil {
+                    let rest = all.filter { $0.reset != fiveHour?.reset }
+                    if let far = rest.max(by: { $0.reset < $1.reset }) { weekly = far }
+                }
             }
-            done(true, (LimitWindow(usedPercent: near.pct, nextReset: near.reset),
-                        LimitWindow(usedPercent: far.pct, nextReset: far.reset),
+            guard let f = fiveHour, let w = weekly else { done(false, nil); return }
+            done(true, (LimitWindow(usedPercent: f.pct, nextReset: f.reset),
+                        LimitWindow(usedPercent: w.pct, nextReset: w.reset),
                         tool))
         }
     }

@@ -112,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     remaining: max(0, 100 - Int(f.usedPercent.rounded())),
                     resetText: Fmt.countdown(until: f.nextReset),
                     value: String(format: "已用 %.0f%% · 剩余 %.0f%%", f.usedPercent, 100 - f.usedPercent),
-                    sub: localText(tokens: snap.localTokens5h, est: snap.est5hLimit)
+                    sub: localText(tokens: snap.localTokens5h)
                 )
                 menu.addItem(item(with: card))
             }
@@ -123,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     remaining: max(0, 100 - Int(w.usedPercent.rounded())),
                     resetText: Fmt.resetDate(w.nextReset),
                     value: String(format: "已用 %.0f%% · 剩余 %.0f%%", w.usedPercent, 100 - w.usedPercent),
-                    sub: localText(tokens: snap.localTokensWeek, est: snap.estWeekLimit)
+                    sub: localText(tokens: snap.localTokensWeek)
                 )
                 menu.addItem(item(with: card))
             }
@@ -185,11 +185,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func localText(tokens: Int64?, est: Int64?) -> String {
-        var parts: [String] = []
-        if let tokens { parts.append("本地 \(Fmt.tokens(tokens))") }
-        if let est { parts.append("限额≈\(Fmt.tokens(est))") }
-        return parts.joined(separator: " · ")
+    private func localText(tokens: Int64?) -> String {
+        guard let tokens else { return "" }
+        return "本地 \(Fmt.tokens(tokens))"
     }
 
     // MARK: 动作

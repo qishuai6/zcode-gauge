@@ -24,7 +24,7 @@ open build/ZCodeGauge.app
 |---|---|
 | 5h / 每周百分比、重置时间 | `bigmodel.cn/api/monitor/usage/quota/limit`（ZCode 客户端同款接口） |
 | 重置次数 | `zcode.z.ai/api/v1/coding-plan/reset/status` |
-| 本地绝对用量、限额估算 | 只读查询 `~/.zcode/cli/db/db.sqlite`，用「本地已用 ÷ API 百分比」反推限额（百分比在 5%~100% 才显示） |
+| 本地绝对用量 | 只读查询 `~/.zcode/cli/db/db.sqlite`（最近 5 小时 / 本周一至今的 token 数） |
 
 凭证：从 `~/.zcode/v2/credentials.json` 解密（AES-256-GCM，密钥由本机用户名/家目录派生，无钥匙串授权）。ZCode 客户端刷新登录态后写回该文件，油表每次现读现解密，自动跟随。算法细节见 `notes/api-probe.md`。
 
@@ -42,5 +42,6 @@ open build/ZCodeGauge.app
 
 ## 更新日志
 
+- **2026-10-19** 修正 5 小时窗口与本周额度对调的问题：原先按 `nextResetTime` 远近猜窗口，窗口重置时间交错时会整体显示反。现与 ZCode 客户端一致，按 `(type=TOKENS_LIMIT, unit=3, number=5)` 取 5 小时窗口、`unit=6` 取周窗口；`percentage` 是已用百分比（客户端渲染 `100 - percentage`，文案为「5 小时 Prompt 池已用 {percent}」）。同时移除本地用量反推的「限额≈」显示——本地统计口径与服务端固定窗口不一致，反推值会严重失真。
 - **2026-10-19** 修复 api-key 查找写死 `bigmodel-individual-coding-plan` 导致两接口齐报「不可达」的问题：credentials.json 里 api-key 的 key 名会随计划类型变化（individual / team 等），现改为优先 individual、其余 `*coding-plan*api-key` 兜底。
 - **2026-10-13** 项目发布：macOS 菜单栏实时查看智谱 Coding Plan 额度——5h 窗口 / 本周 token / 重置次数 / MCP 工具额度，60 秒自动刷新，零第三方依赖。
