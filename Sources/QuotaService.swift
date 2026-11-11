@@ -37,31 +37,55 @@ struct QuotaSnapshot {
     }
 }
 
-// MARK: - 凭证解密（AES-256-GCM，enc:v1:iv.tag.ciphertext）
+// MARK: - 凭证解密
+// v1:  enc:v1:<iv>.<tag>.<ct>，key = sha256(派生串：ZCODE_CREDENTIAL_SECRET 或 darwin 家目录 fallback)
+// v2:  enc:v2:<os|env>:<keyId24hex>:<iv>.<tag>.<ct>（ZCode 2026-11 起默认格式）
+//      os  来源：key = 钥匙串里存的原始 32 字节（service="ZCode Credential Encryption"，
+//               account = sha256hex(credentials.json 绝对路径)，密码为 base64url 的 43 字符）
+//      env 来源：key = sha256(ZCODE_CREDENTIAL_SECRET / credential-secret 文件内容)
+//      keyId = sha256(key) 的 hex 前 24 位，用于校验取到的 key 是否匹配
 
 enum Credentials {
-    static let prefix = "enc:v1:"
+    static let v1Prefix = "enc:v1:"
+    static let v2Prefix = "enc:v2:"
+    static let storePath = NSString(string: "~/.zcode/v2/credentials.json").expandingTildeInPath
 
     static func load() -> (apiKey: String, jwt: String, oauth: String)? {
-        let path = NSString(string: "~/.zcode/v2/credentials.json").expandingTildeInPath
-        guard let data = FileManager.default.contents(atPath: path),
+        guard let data = FileManager.default.contents(atPath: storePath),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
             return nil
         }
-        let env = ProcessInfo.processInfo.environment
-        let secret = env["ZCODE_CREDENTIAL_SECRET"]
-            ?? "zcode-credential-fallback:darwin:\(NSHomeDirectory()):\(NSUserName())"
-        let key = SymmetricKey(data: SHA256.hash(data: Data(secret.utf8)))
 
         func decrypt(_ s: String) -> String? {
-            guard s.hasPrefix(prefix) else { return s }
-            let parts = s.dropFirst(prefix.count).components(separatedBy: ".")
+            if s.hasPrefix(v2Prefix) {
+                let fields = s.dropFirst(v2Prefix.count).components(separatedBy: ":")
+                guard fields.count == 3, fields[0] == "os" || fields[0] == "env",
+                      fields[1].count == 24,
+                      fields[1].range(of: "^[a-f0-9]{24}$", options: .regularExpression) != nil else { return nil }
+                let parts = fields[2].components(separatedBy: ".")
+                guard parts.count == 3,
+                      let iv = b64url(parts[0]), let tag = b64url(parts[1]), let ct = b64url(parts[2]),
+                      iv.count == 12, tag.count == 16 else { return nil }
+                for rawKey in v2Keys() {
+                    let kid = SHA256.hash(data: rawKey).map { String(format: "%02x", $0) }.joined().prefix(24)
+                    guard kid == fields[1] else { continue }
+                    guard let box = try? AES.GCM.SealedBox(combined: iv + ct + tag),
+                          let plain = try? AES.GCM.open(box, using: SymmetricKey(data: rawKey)) else { return nil }
+                    return String(data: plain, encoding: .utf8)
+                }
+                return nil
+            }
+            guard s.hasPrefix(v1Prefix) else { return s }
+            let parts = s.dropFirst(v1Prefix.count).components(separatedBy: ".")
             guard parts.count == 3,
                   let iv = b64url(parts[0]), let tag = b64url(parts[1]), let ct = b64url(parts[2]),
                   iv.count == 12, tag.count == 16 else { return nil }
-            guard let box = try? AES.GCM.SealedBox(combined: iv + ct + tag),
-                  let plain = try? AES.GCM.open(box, using: key) else { return nil }
-            return String(data: plain, encoding: .utf8)
+            for key in v1Keys() {
+                guard let box = try? AES.GCM.SealedBox(combined: iv + ct + tag),
+                      let plain = try? AES.GCM.open(box, using: key) else { continue }
+                return String(data: plain, encoding: .utf8)
+            }
+            return nil
         }
 
         var apiKey: String?
@@ -85,6 +109,74 @@ enum Credentials {
         var t = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         while t.count % 4 != 0 { t += "=" }
         return Data(base64Encoded: t)
+    }
+
+    // v1 候选密钥（客户端 legacyKeyCandidates 逻辑：env 值与 darwin fallback 派生）
+    private static func v1Keys() -> [SymmetricKey] {
+        let env = ProcessInfo.processInfo.environment
+        let fallback = "zcode-credential-fallback:darwin:\(NSHomeDirectory()):\(NSUserName())"
+        return [env["ZCODE_CREDENTIAL_SECRET"], fallback].compactMap { $0 }
+            .map { SymmetricKey(data: SHA256.hash(data: Data($0.utf8))) }
+    }
+
+    // v2 候选密钥：优先钥匙串原始 32 字节，其次 env/文件来源的 sha256
+    private static let keychainKeyCache = OnceCache { keychainKey() }
+
+    // 钥匙串密钥进程内只读一次：security 子进程并发多次触发会偶发卡死（ACL 竞争），且刷新每 60s 一轮没必要反复读
+    private final class OnceCache {
+        private let loader: () -> Data?
+        private var value: Data?
+        private var loaded = false
+        private let lock = NSLock()
+        init(_ loader: @escaping () -> Data?) { self.loader = loader }
+        func get() -> Data? {
+            lock.lock(); defer { lock.unlock() }
+            if !loaded { value = loader(); loaded = true }
+            return value
+        }
+    }
+
+    private static func v2Keys() -> [Data] {
+        var keys: [Data] = []
+        if let k = keychainKeyCache.get() { keys.append(k) }
+        let env = ProcessInfo.processInfo.environment
+        let secretFile = NSString(string: "~/.zcode/v2/credential-secret").expandingTildeInPath
+        for secret in [env["ZCODE_CREDENTIAL_SECRET"],
+                       try? String(contentsOfFile: secretFile, encoding: .utf8).trimmed()] {
+            guard let secret, !secret.isEmpty else { continue }
+            keys.append(Data(SHA256.hash(data: Data(secret.utf8))))
+        }
+        return keys
+    }
+
+    // 钥匙串条目由 ZCode 客户端（@napi-rs/keyring）写入：
+    // service="ZCode Credential Encryption"，account=sha256hex(credentials.json 绝对路径)
+    // 走 /usr/bin/security 命令行读取：直连 SecItemCopyMatching 读他人 App 创建的条目
+    // 会弹授权框（实测卡死等待），security CLI 则可静默读出
+    private static func keychainKey() -> Data? {
+        let account = SHA256.hash(data: Data(storePath.utf8)).map { String(format: "%02x", $0) }.joined()
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        p.arguments = ["find-generic-password",
+                       "-s", "ZCode Credential Encryption",
+                       "-a", account,
+                       "-w"]  // -w：密码打到 stdout
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        do { try p.run() } catch { return nil }
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return nil }
+        guard let pw = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmed(),
+              !pw.isEmpty,
+              let key = b64url(pw), key.count == 32 else { return nil }
+        return key
+    }
+}
+
+private extension String {
+    func trimmed() -> String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

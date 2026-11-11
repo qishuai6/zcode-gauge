@@ -26,7 +26,7 @@ open build/ZCodeGauge.app
 | 重置次数 | `zcode.z.ai/api/v1/coding-plan/reset/status` |
 | 本地绝对用量 | 只读查询 `~/.zcode/cli/db/db.sqlite`（最近 5 小时 / 本周一至今的 token 数） |
 
-凭证：从 `~/.zcode/v2/credentials.json` 解密（AES-256-GCM，密钥由本机用户名/家目录派生，无钥匙串授权）。ZCode 客户端刷新登录态后写回该文件，油表每次现读现解密，自动跟随。算法细节见 `notes/api-probe.md`。
+凭证：从 `~/.zcode/v2/credentials.json` 解密（AES-256-GCM）。ZCode 2026-11 起默认新格式 `enc:v2:os:`——密钥是 32 字节随机串，存 macOS 钥匙串（service=`ZCode Credential Encryption`，account=credentials.json 绝对路径的 SHA256 hex），油表通过 `/usr/bin/security` 静默读取，无需授权弹窗；旧格式 `enc:v1:` 仍兼容。ZCode 客户端刷新登录态后写回该文件，油表每次现读现解密，自动跟随。算法细节见 `notes/api-probe.md`。
 
 ## 故障排查
 
@@ -42,6 +42,7 @@ open build/ZCodeGauge.app
 
 ## 更新日志
 
+- **2026-11-11** 适配 ZCode 更新后的凭证新格式 `enc:v2:os:`（两接口齐报「不可达」的根因）：新版把加密密钥从「用户名/家目录派生」改为 32 字节随机串存进 macOS 钥匙串（service=`ZCode Credential Encryption`，account=credentials.json 路径的 SHA256 hex），密文多了一段 keyId（密钥 SHA256 的 hex 前 24 位）用于校验。读取钥匙串走 `/usr/bin/security` 命令行（直连 SecItemCopyMatching 会弹授权框），且密钥进程内只读一次——并发多次触发 security 子进程会偶发卡死。旧格式 `enc:v1:` 与 `*coding-plan*api-key` 兜底逻辑保留。
 - **2026-10-19** 修正 5 小时窗口与本周额度对调的问题：原先按 `nextResetTime` 远近猜窗口，窗口重置时间交错时会整体显示反。现与 ZCode 客户端一致，按 `(type=TOKENS_LIMIT, unit=3, number=5)` 取 5 小时窗口、`unit=6` 取周窗口；`percentage` 是已用百分比（客户端渲染 `100 - percentage`，文案为「5 小时 Prompt 池已用 {percent}」）。同时移除本地用量反推的「限额≈」显示——本地统计口径与服务端固定窗口不一致，反推值会严重失真。
 - **2026-10-19** 修复 api-key 查找写死 `bigmodel-individual-coding-plan` 导致两接口齐报「不可达」的问题：credentials.json 里 api-key 的 key 名会随计划类型变化（individual / team 等），现改为优先 individual、其余 `*coding-plan*api-key` 兜底。
 - **2026-10-13** 项目发布：macOS 菜单栏实时查看智谱 Coding Plan 额度——5h 窗口 / 本周 token / 重置次数 / MCP 工具额度，60 秒自动刷新，零第三方依赖。
